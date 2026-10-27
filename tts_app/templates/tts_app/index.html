@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Voice Converter</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #1e1e2f 0%, #2a2a40 100%);
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        .container {
+            background: #fff;
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 700px;
+            width: 100%;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+        h1 { text-align: center; color: #333; margin-top: 0; }
+        label { display: block; margin: 15px 0 6px; font-weight: 600; color: #444; }
+        textarea {
+            width: 100%;
+            min-height: 160px;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            font-size: 15px;
+            resize: vertical;
+            font-family: inherit;
+        }
+        textarea:focus { outline: none; border-color: #667eea; }
+        textarea.error-border { border-color: #d32f2f; }
+        select, input[type="range"] { width: 100%; padding: 10px; border-radius: 8px; border: 2px solid #ddd; font-size: 15px; }
+        select:focus { outline: none; border-color: #667eea; }
+        .speed-row { display: flex; align-items: center; gap: 12px; }
+        .speed-row input[type="range"] { flex: 1; padding: 0; }
+        .speed-value { min-width: 60px; text-align: center; font-weight: 700; color: #667eea; font-size: 16px; }
+        .btn-row { display: flex; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
+        button {
+            flex: 1;
+            padding: 13px 18px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+        button:active { transform: scale(0.98); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        #demoBtn { background: #f0f0ff; color: #667eea; border: 2px solid #667eea; }
+        #convertBtn { background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; }
+        .status { margin-top: 14px; font-size: 14px; color: #666; min-height: 20px; }
+        .status.error { color: #d32f2f; }
+        audio { width: 100%; margin-top: 16px; display: none; }
+        
+        /* Character Count Styles */
+        .char-count { text-align: right; font-size: 12px; color: #999; margin-top: 4px; }
+        .char-count.error { color: #d32f2f; font-weight: bold; }
+        
+        /* PROGRESS BAR CSS */
+        .progress-container {
+            width: 100%;
+            background-color: #e0e0e0;
+            border-radius: 8px;
+            margin-top: 15px;
+            display: none;
+            overflow: hidden;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 24px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            color: white;
+            text-align: center;
+            line-height: 24px;
+            font-size: 12px;
+            font-weight: bold;
+            border-radius: 8px;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🎙️ AI Voice Converter</h1>
+
+    <label for="textInput">1. Enter your text:</label>
+    <textarea id="textInput" placeholder="Paste or type your text here..."></textarea>
+    <div class="char-count" id="charCountDisplay">
+        <span id="charCount">0</span> / {{ max_chars }} characters
+    </div>
+
+    <label for="speedInput">2. Speed (0.1x to 2.0x):</label>
+    <div class="speed-row">
+        <input type="range" id="speedInput" min="0.1" max="2.0" value="{{ default_speed }}" step="0.1">
+        <span class="speed-value" id="speedValue">{{ default_speed }}x</span>
+    </div>
+
+    <label for="voiceSelect">3. Choose Voice:</label>
+    <select id="voiceSelect">
+        {% for v in voices %}
+        <option value="{{ v.id }}" {% if v.id == default_voice %}selected{% endif %}>{{ v.name }}</option>
+        {% endfor %}
+    </select>
+
+    <div class="btn-row">
+        <button id="demoBtn" type="button">🔊 Listen Demo</button>
+        <button id="convertBtn" type="button">✨ Convert to Voice</button>
+    </div>
+
+    <!-- PROGRESS BAR -->
+    <div class="progress-container" id="progressContainer">
+        <div class="progress-bar" id="progressBar">0%</div>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <audio id="audioPlayer" controls></audio>
+</div>
+
+<script>
+    const textInput = document.getElementById('textInput');
+    const speedInput = document.getElementById('speedInput');
+    const speedValue = document.getElementById('speedValue');
+    const voiceSelect = document.getElementById('voiceSelect');
+    const demoBtn = document.getElementById('demoBtn');
+    const convertBtn = document.getElementById('convertBtn');
+    const status = document.getElementById('status');
+    const audioPlayer = document.getElementById('audioPlayer');
+    
+    // Character count variables
+    const charCount = document.getElementById('charCount');
+    const charCountDisplay = document.getElementById('charCountDisplay');
+    const MAX_CHARS = parseInt("{{ max_chars }}");
+    
+    // Progress bar elements
+    const progressContainer = document.getElementById('progressContainer');
+    const progressBar = document.getElementById('progressBar');
+    let progressInterval;
+
+    const csrfToken = '{{ csrf_token }}';
+
+    // Check Character Limit on typing
+    textInput.addEventListener('input', () => {
+        const len = textInput.value.length;
+        charCount.textContent = len;
+        
+        if (len > MAX_CHARS) {
+            charCountDisplay.classList.add('error');
+            textInput.classList.add('error-border');
+            convertBtn.disabled = true; // Disable button if limit exceeded
+        } else {
+            charCountDisplay.classList.remove('error');
+            textInput.classList.remove('error-border');
+            convertBtn.disabled = false;
+        }
+    });
+
+    speedInput.addEventListener('input', () => {
+        speedValue.textContent = parseFloat(speedInput.value).toFixed(1) + 'x';
+    });
+
+    function getSpeedParam() {
+        return parseFloat(speedInput.value).toFixed(1);
+    }
+
+    function setStatus(msg, isError = false) {
+        status.textContent = msg;
+        status.className = 'status' + (isError ? ' error' : '');
+    }
+
+    demoBtn.addEventListener('click', async () => {
+        demoBtn.disabled = true;
+        setStatus('Generating demo...');
+
+        const params = new URLSearchParams({
+            voice: voiceSelect.value,
+            speed: getSpeedParam()
+        });
+
+        try {
+            const res = await fetch('/demo/?' + params.toString());
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || 'Demo failed');
+            }
+            const blob = await res.blob();
+            audioPlayer.src = URL.createObjectURL(blob);
+            audioPlayer.style.display = 'block';
+            audioPlayer.play();
+            setStatus('✅ Demo ready! Listen now.');
+        } catch (e) {
+            setStatus('❌ Error: ' + e.message, true);
+        } finally {
+            demoBtn.disabled = false;
+        }
+    });
+
+    convertBtn.addEventListener('click', async () => {
+        const text = textInput.value.trim();
+        
+        if (!text) {
+            setStatus('❌ Please enter some text first!', true);
+            return;
+        }
+
+        if (text.length > MAX_CHARS) {
+            setStatus(`❌ Text is too long. Maximum ${MAX_CHARS} characters allowed.`, true);
+            return;
+        }
+
+        convertBtn.disabled = true;
+        setStatus('Converting... Please wait.');
+        
+        progressContainer.style.display = 'block';
+        progressBar.style.width = '0%';
+        progressBar.textContent = '0%';
+        
+        let progress = 0;
+        progressInterval = setInterval(() => {
+            if (progress < 90) {
+                progress += Math.floor(Math.random() * 5) + 1; 
+                if (progress > 90) progress = 90;
+                progressBar.style.width = progress + '%';
+                progressBar.textContent = progress + '%';
+            }
+        }, 500);
+
+        const formData = new FormData();
+        formData.append('text', text);
+        formData.append('voice', voiceSelect.value);
+        formData.append('speed', getSpeedParam());
+
+        try {
+            const res = await fetch('/convert/', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrfToken },
+                body: formData
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || 'Conversion failed');
+            }
+
+            const blob = await res.blob();
+            
+            clearInterval(progressInterval);
+            progressBar.style.width = '100%';
+            progressBar.textContent = '100%';
+            
+            setTimeout(() => {
+                progressContainer.style.display = 'none';
+            }, 1000);
+
+            audioPlayer.src = URL.createObjectURL(blob);
+            audioPlayer.style.display = 'block';
+            audioPlayer.play();
+
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'audio_output.mp3';
+            a.textContent = '⬇️ Download MP3';
+            a.style.display = 'block';
+            a.style.marginTop = '12px';
+            a.style.textAlign = 'center';
+            a.style.color = '#667eea';
+            a.style.fontWeight = '700';
+            a.style.fontSize = '16px';
+
+            const old = document.getElementById('downloadLink');
+            if (old) old.remove();
+            a.id = 'downloadLink';
+            document.querySelector('.container').appendChild(a);
+
+            setStatus('✅ Conversion complete!');
+        } catch (e) {
+            clearInterval(progressInterval);
+            progressContainer.style.display = 'none';
+            setStatus('❌ Error: ' + e.message, true);
+        } finally {
+            convertBtn.disabled = false;
+        }
+    });
+</script>
+</body>
+</html>
